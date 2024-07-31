@@ -1,0 +1,139 @@
+---
+title: "Final Code"
+author: "Ammar Alwandi"
+date: "2024-07-31"
+output: html_document
+---
+### Impor Data
+```{r}
+pnp_tj <- read.csv('training_jumlah_penumpang_tj.csv', sep=';')
+armada_tj <- read.csv('jumlah_armada_tj.csv',sep=';')
+pnp_lrt <- read.csv('jumlah_penumpang_lrt.csv',sep=';')
+pnp_mrt <- read.csv('jumlah_penumpang_mrt.csv',sep=';')
+perjalanan_lrt <- read.csv('jumlah_perjalanan_lrt.csv',sep=';')
+perjalanan_mrt <- read.csv('jumlah_perjalanan_mrt.csv',sep=';')
+test_tj <- read.csv('testing_jumlah_penumpang_tj.csv',sep=';')
+```
+### Impor Data Pendukung Google Mobility
+```{r}
+library(dplyr)
+mob21 <- read.csv('2021_ID_Region_Mobility_Report.csv') %>% 
+  filter(sub_region_1 == 'Jakarta')
+mob22 <- read.csv('2022_ID_Region_Mobility_Report.csv')%>% 
+  filter(sub_region_1 == 'Jakarta')
+mob20 <- read.csv('2020_ID_Region_Mobility_Report.csv')%>% 
+  filter(sub_region_1 == 'Jakarta')
+
+library(lubridate)
+# Buat urutan tanggal untuk masing-masing tahun
+mob <- rbind(mob20[16:321,],mob21,mob22)
+mob <- mob[,9:15] %>% 
+  mutate(date=as.Date(date),
+         month = month(date),
+         year = year(date))
+mob_month <- mob %>% 
+  group_by(month, year) %>% 
+  summarise(retail_recreation = mean(retail_and_recreation_percent_change_from_baseline),
+            grocery = mean(grocery_and_pharmacy_percent_change_from_baseline),
+            parks = mean(parks_percent_change_from_baseline),
+            stations = mean(transit_stations_percent_change_from_baseline),
+            workplace = mean(workplaces_percent_change_from_baseline),
+            residential = mean(residential_percent_change_from_baseline)) %>% 
+  arrange(year, month)
+
+mob_month
+princomp(mob_month[,3:8])$loadings
+
+
+ts_mob_month <- ts(mob_month,start=c(2020,3), frequency = 12)
+ts_pnp_tj <- ts(pnp_tj$jumlah_penumpang, start=c(2015,1), frequency = 12)
+ts_pnp_tj_covid <- window(ts_pnp_tj, start=c(2020,3), end = c(2022,10))
+cbind(ts_mob_month[,3:8],ts_pnp_tj_covid) %>% cor() %>% 
+  ggcorrplot::ggcorrplot(hc.order = T, lab =T)
+
+
+ts_tj_mob <- cbind(ts_mob_month[,3:8],ts_pnp_tj_covid)
+colnames(ts_tj_mob) <- c('retail_recreation','parks','workplace','grocery','stations','residential','pnp')
+```
+
+### Eksplorasi
+```{r}
+ts_pnp_tj <- ts(pnp_tj[,3], frequency = 12, start=c(2015,1))
+ts_armada_tj <- ts(armada_tj[,3], frequency = 12, start=c(2023,1))
+ts_perjalanan_lrt <- ts(perjalanan_lrt[,3], frequency = 12, start=c(2023,1))
+ts_perjalanan_mrt <- ts(perjalanan_mrt[,3], frequency = 12, start=c(2023,1))
+ts_pnp_lrt <- ts(perjalanan_lrt[,3], frequency = 12, start=c(2023,1))
+ts_pnp_mrt <- ts(perjalanan_mrt[,3], frequency = 12, start=c(2023,1))
+
+library(forecast)
+decompose(ts_pnp_tj) %>% autoplot()
+autoplot(ts_pnp_tj)
+autoplot(ts_armada_tj)
+```
+
+### Final Subs
+```{r}
+library(forecast)
+ts_pnp_tj %>% tsdisplay()
+ts_pnp_tj %>% diff() %>% tsdisplay()
+ts_pnp_tj %>% diff() %>% diff() %>% tsdisplay()
+```
+### Pemilihan Model
+```{r}
+ts_pnp_tj %>% window(end=c(2023,6)) %>% 
+  Arima(order=c(0,1,0)) %>% 
+  forecast(h=6) %>% 
+  accuracy(ts_pnp_tj %>% window(start=c(2023,7)))
+
+ts_pnp_tj %>% window(end=c(2023,6)) %>% 
+  Arima(order=c(1,2,1)) %>% 
+  forecast(h=6) %>% 
+  accuracy(ts_pnp_tj %>% window(start=c(2023,7)))
+
+ts_pnp_tj %>% window(end=c(2023,6)) %>% 
+  Arima(order=c(2,1,2)) %>% 
+  forecast(h=6) %>% 
+  accuracy(ts_pnp_tj %>% window(start=c(2023,7)))
+
+ts_pnp_tj %>% window(end=c(2023,6)) %>% 
+  Arima(order=c(1,2,1), seasonal = c(1,1,1)) %>% 
+  forecast(h=6) %>% 
+  accuracy(ts_pnp_tj %>% window(start=c(2023,7)))
+```
+
+### Pembuatan Model Final
+- Membuat Variabel Mobilitas Menjadi Regressor Arima dengan bantuan Jumlah Armada
+```{r}
+pca_google <- mob_month %>% princomp()
+summary(pca_google)
+ts_google <- pca_google$scores[,1] %>% ts(start=c(2020,3),end=c(2022,10),frequency = 12)
+pnp_mobil <- cbind(ts_google,ts_pnp_tj_covid)
+
+only2023 <- cbind(pnp_mobil[,1] %>%
+  Arima(order=c(0,1,0),seasonal = c(0,1,0)) %>% 
+  forecast(h=14) %>% .$mean, ts_pnp_tj %>% window(start=c(2020,3)),
+  ts_armada_tj) %>% window(start=c(2023,1))
+
+colnames(only2023) <- c('mobility','pnp','armada')
+
+o23 <- only2023 %>% 
+  window(end=c(2023,12))
+
+armada24 <- c(only2023[,3] %>% window(start=c(2024,1)),
+              only2023[,3] %>% Arima(order=c(1,0,1)) %>% forecast(1)) %>% .$mean
+
+mob24 <- o23[,1] %>% 
+  Arima(order=c(1,0,1), xreg=o23[,3]) %>% 
+  forecast(h=6, xreg=c(only2023[,3] %>% window(start=c(2024,1)),armada24))  %>% .$mean
+
+mob24
+
+final_subs <- data.frame(
+  id=1:6,
+  jumlah_penumpang=o23[,2] %>% 
+  Arima(order=c(0,1,0), xreg=o23[,c(1)]) %>% 
+  forecast(h=6, xreg=cbind(mob24)) %>% .$mean)
+
+final_subs
+```
+
